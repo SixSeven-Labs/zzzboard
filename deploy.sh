@@ -29,6 +29,15 @@ fi
 command -v git >/dev/null 2>&1 || apt-get install -y -q git
 systemctl enable --now docker
 
+log "swap (the Rust build needs more than an e2-micro's 1 GB)"
+if [[ -z $(swapon --show --noheadings) ]]; then
+  fallocate -l 2G /swapfile && chmod 600 /swapfile && mkswap -q /swapfile && swapon /swapfile
+  grep -q '^/swapfile' /etc/fstab || echo '/swapfile none swap sw 0 0' >> /etc/fstab
+  echo "2 GB swapfile created"
+else
+  echo "already present: $(swapon --show --noheadings | awk '{print $1, $3}')"
+fi
+
 log "data dir $DATA_DIR"
 if [[ -d $DATA_DIR ]]; then
   echo "exists, left untouched ($(du -sh "$DATA_DIR" | cut -f1))"
