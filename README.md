@@ -119,7 +119,7 @@ cargo run --release            # ZZZ_DATA_DIR=./data ZZZ_PORT=8080 to override
 With the compose stack (app behind Caddy):
 
 ```
-cp .env.example .env           # ZZZ_TLS=internal: Caddy uses a self-signed CA locally
+cp .env.example .env           # ZZZ_TLS=internal (self-signed CA), ZZZ_EDGE_BIND=127.0.0.1 (loopback only)
 docker compose up -d --build
 ./smoke.sh http://localhost:8080
 curl -k --resolve zzzboard.org:443:127.0.0.1 https://zzzboard.org/ | head   # through Caddy

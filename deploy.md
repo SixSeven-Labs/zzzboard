@@ -4,8 +4,9 @@
 25 Sep 2026, or the VM is deleted. The e2-micro, its 30 GB standard disk and the static IP
 stay in the always-free tier after upgrading.**
 
-Deployed 6 Sep 2026 (pass 1b). Project `<gcp-project-id>`, account
-`<gcloud-account>`.
+Deployed 6 Sep 2026 (pass 1b) into the GCP project the workstation's gcloud is configured
+for (`gcloud config get project`). Project ID and account are deliberately not written here:
+this file is public.
 
 ## What exists
 

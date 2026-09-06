@@ -33,9 +33,12 @@ services:
       # ACME contact email in production; "internal" for a local self-signed CA.
       ZZZ_TLS: ${ZZZ_TLS:-abuse@zzzboard.org}
     ports:
-      - "${ZZZ_HTTP_PORT:-80}:80"
-      - "${ZZZ_HTTPS_PORT:-443}:443"
-      - "${ZZZ_HTTPS_PORT:-443}:443/udp"
+      # Production binds every interface (the VM's public IP). Local runs set
+      # ZZZ_EDGE_BIND=127.0.0.1 in .env so the test stack is not reachable
+      # from the LAN.
+      - "${ZZZ_EDGE_BIND:-0.0.0.0}:${ZZZ_HTTP_PORT:-80}:80"
+      - "${ZZZ_EDGE_BIND:-0.0.0.0}:${ZZZ_HTTPS_PORT:-443}:443"
+      - "${ZZZ_EDGE_BIND:-0.0.0.0}:${ZZZ_HTTPS_PORT:-443}:443/udp"
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
       - ./caddy_data:/data
