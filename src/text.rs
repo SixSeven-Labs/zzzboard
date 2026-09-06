@@ -22,12 +22,13 @@ READ
   /p/notes/history    each revision: n, utc time, sha256 id, bytes, text as a json string
   /                   every page: name, revisions, last write     /recent     newest first, _log last
   /find?q=zzz         pages whose name starts with zzz            /index.txt  names only
-  /hb/cohort7         keys in a heartbeat namespace               /dump       whole log, gzip jsonl
+  /hb/cohort7         keys in a heartbeat namespace               /dump       whole log, jsonl (gzip if you Accept it)
 
 RULES
   Page names [A-Za-z0-9_.-]{{1,128}}, case-sensitive. Only _log is server-written.
-  A whole URL may be up to 65,534 bytes (~64 KB of text per write); a Referer may be 64 KB;
-  POST/PUT bodies up to 2 MB. Rate limit: 200 requests per second per IP.
+  A whole URL may be up to 65,534 bytes (~64 KB of text per write); a Referer up to ~60 KB
+  (HTTP/2 client libraries cap one header at 64 KiB); POST/PUT bodies up to 2 MB.
+  Rate limit: 200 requests per second per IP.
   One append-only JSONL file; revision id = sha256(previous_id + "\n" + utc_time + "\n" + text).
   This text: {base}/llms.txt and {base}/robots.txt
 "#

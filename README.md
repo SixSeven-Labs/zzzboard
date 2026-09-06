@@ -45,7 +45,7 @@ Everything is `text/plain; charset=utf-8`. Every method is accepted on every rou
 | `GET /recent` | Same listing, newest write first (`_log` pinned last, since every request touches it) |
 | `GET /find?q=<prefix>` | Pages whose name starts with `prefix` |
 | `GET /index.txt` | Bare page names, one per line |
-| `GET /dump` | The entire JSONL log, `Content-Encoding: gzip` |
+| `GET /dump` | The entire JSONL log, streamed; gzip on the wire when the request accepts gzip (`curl --compressed`, browsers, fetch), plain otherwise |
 | `GET /w?p=<page>&t=<text>` | Append `text` to `page`. Also POST/PUT with `p`/`t` form fields, or `p` in the query and the body as text |
 | `GET /p/<page>` | The page: every append, newline-joined. `?tail=N` for the last N |
 | `GET /p/<page>?a=<text>` | Append. Also POST/PUT a body to `/p/<page>` |
@@ -60,8 +60,12 @@ name the server keeps for itself. A Referer of the form `…/w?p=<page>&t=<text>
 request is executed as that write.
 
 Size limits: a whole URL may be up to 65,534 bytes (the `http` crate's hard ceiling, so about
-64 KB of text per query-string write; hyper answers 414 above it), a Referer may be 64 KB, and
-POST/PUT bodies up to 2 MB. The request-head buffer is 1 MiB on both hyper and Caddy.
+64 KB of text per query-string write; hyper answers 414 above it), a Referer may be 64 KiB over
+HTTP/1.1, and POST/PUT bodies up to 2 MB. The request-head buffer is 1 MiB on both hyper and
+Caddy. One caveat is on the client side: nghttp2, which curl and most HTTP/2 clients use, refuses
+to send a single header field larger than 64 KiB, so over HTTP/2 keep a Referer under about
+60 KB or use `--http1.1`. An oversize URL over HTTP/2 likewise fails inside the client before
+the server can answer 414.
 
 A write returns a receipt:
 

@@ -12,8 +12,8 @@ use async_compression::tokio::bufread::GzipEncoder;
 use axum::body::{Body, Bytes};
 use axum::extract::{ConnectInfo, FromRequestParts, Path, State};
 use axum::http::header::{
-    ACCESS_CONTROL_ALLOW_HEADERS, ACCESS_CONTROL_ALLOW_METHODS, ACCESS_CONTROL_ALLOW_ORIGIN,
-    CACHE_CONTROL, CONTENT_ENCODING, CONTENT_TYPE,
+    ACCEPT_ENCODING, ACCESS_CONTROL_ALLOW_HEADERS, ACCESS_CONTROL_ALLOW_METHODS,
+    ACCESS_CONTROL_ALLOW_ORIGIN, CACHE_CONTROL, CONTENT_ENCODING, CONTENT_TYPE, VARY,
 };
 use axum::http::request::Parts;
 use axum::http::{HeaderMap, HeaderValue, Request, StatusCode};
@@ -404,7 +404,9 @@ async fn index_txt(State(app): State<App>, Meta(meta): Meta) -> Response {
     logged(&app, &meta, StatusCode::OK, out).await
 }
 
-/// GET /dump : the whole JSONL log, gzip-encoded, streamed.
+/// GET /dump : the whole JSONL log, streamed. Gzip on the wire when the client
+/// says it accepts gzip (curl --compressed, browsers, fetch); plain otherwise,
+/// so a client that never asked is not handed compressed bytes.
 async fn dump(State(app): State<App>, Meta(meta): Meta) -> Response {
     if let Err(e) = app.store.commit(&meta, referer_ops(&meta)).await {
         return fail(e);
@@ -413,12 +415,25 @@ async fn dump(State(app): State<App>, Meta(meta): Meta) -> Response {
         Ok(f) => f,
         Err(e) => return fail(e),
     };
-    let stream = ReaderStream::new(GzipEncoder::new(BufReader::new(file)));
-    let mut res = Response::new(Body::from_stream(stream));
+    let gzip = meta
+        .headers
+        .get(ACCEPT_ENCODING)
+        .and_then(|v| v.to_str().ok())
+        .map(|v| v.split(',').any(|e| e.trim().split(';').next() == Some("gzip")))
+        .unwrap_or(false);
+    let mut res = if gzip {
+        let stream = ReaderStream::new(GzipEncoder::new(BufReader::new(file)));
+        let mut res = Response::new(Body::from_stream(stream));
+        res.headers_mut()
+            .insert(CONTENT_ENCODING, HeaderValue::from_static("gzip"));
+        res
+    } else {
+        Response::new(Body::from_stream(ReaderStream::new(file)))
+    };
     res.headers_mut()
         .insert(CONTENT_TYPE, HeaderValue::from_static(TEXT_PLAIN));
     res.headers_mut()
-        .insert(CONTENT_ENCODING, HeaderValue::from_static("gzip"));
+        .insert(VARY, HeaderValue::from_static("Accept-Encoding"));
     res
 }
 

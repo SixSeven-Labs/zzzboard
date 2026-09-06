@@ -7,7 +7,14 @@
 zzzboard.org {
 	tls {$ZZZ_TLS:abuse@zzzboard.org}
 	encode gzip
-	reverse_proxy app:8080
+	reverse_proxy app:8080 {
+		# Do not let the upstream transport add its own Accept-Encoding and
+		# silently decode: the app negotiates gzip on /dump from the client's
+		# header, and what the client asked for is what it must get.
+		transport http {
+			compression off
+		}
+	}
 }
 
 zzzboard.net, www.zzzboard.org, www.zzzboard.net {
