@@ -56,13 +56,17 @@ gcloud compute instances create zzzboard --zone=us-east1-b --machine-type=e2-mic
 
 `ship.sh` does, in order: `cargo zigbuild --release --locked --target x86_64-unknown-linux-musl`,
 `docker buildx build --platform linux/amd64 -f Dockerfile.ship -t zzzboard:amd64 --load .`,
-`docker save zzzboard:amd64 | gzip`, `gcloud compute scp <tar> zzzboard:/tmp/zzzboard-image.tar.gz --zone us-east1-b`,
+`docker save zzzboard:amd64 | gzip`, `gcloud compute scp <tar> deploy.sh zzzboard:/tmp/ --zone us-east1-b`,
 then:
 
 ```
 gcloud compute ssh zzzboard --zone us-east1-b --command \
-  "sudo env ZZZ_IMAGE=/tmp/zzzboard-image.tar.gz bash -c 'curl -fsSL https://raw.githubusercontent.com/SixSeven-Labs/zzzboard/main/deploy.sh | bash'"
+  "sudo env ZZZ_IMAGE=/tmp/zzzboard-image.tar.gz bash /tmp/deploy.sh"
 ```
+
+(deploy.sh is copied from the workstation's pushed tree rather than piped from
+raw.githubusercontent.com, whose cache served a stale copy on the second deploy of the day.
+The `curl | bash` form in deploy.sh's header is for bootstrapping a VM without a workstation.)
 
 Compiling Rust on the VM itself works too (`deploy.sh` without `ZZZ_IMAGE` builds with
 `docker compose build`, and it now adds swap first), but an e2-micro has 1 GB of RAM and two

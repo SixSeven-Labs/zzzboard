@@ -7,8 +7,8 @@
 #   ZZZ_VM=x ZZZ_ZONE=y ./ship.sh
 #
 # Needs: rustup, cargo-zigbuild (+ zig), docker with buildx, gcloud (logged in,
-# project set). Run from the repo root on a pushed commit: deploy.sh is fetched
-# from GitHub main on the VM.
+# project set). Run from the repo root on a pushed commit: deploy.sh on the VM
+# checks out origin/main.
 set -euo pipefail
 
 VM=${ZZZ_VM:-zzzboard}
@@ -39,9 +39,12 @@ echo "==> saving image to $tar"
 docker save "$IMAGE" | gzip >"$tar"
 ls -la "$tar"
 
-echo "==> copying to $VM ($ZONE)"
-gcloud compute scp "$tar" "$VM:$REMOTE_TAR" --zone "$ZONE" --quiet
+echo "==> copying image and deploy.sh to $VM ($ZONE)"
+# deploy.sh is sent from this (clean, pushed) tree rather than fetched from
+# raw.githubusercontent.com, whose cache can serve a stale copy for minutes.
+gcloud compute scp "$tar" deploy.sh "$VM:/tmp/" --zone "$ZONE" --quiet
+gcloud compute ssh "$VM" --zone "$ZONE" --quiet --command "mv /tmp/$(basename "$tar") $REMOTE_TAR"
 
 echo "==> running deploy.sh on $VM with the pre-built image"
 gcloud compute ssh "$VM" --zone "$ZONE" --quiet --command \
-  "sudo env ZZZ_IMAGE=$REMOTE_TAR bash -c 'curl -fsSL https://raw.githubusercontent.com/SixSeven-Labs/zzzboard/main/deploy.sh | bash'"
+  "sudo env ZZZ_IMAGE=$REMOTE_TAR bash /tmp/deploy.sh"
