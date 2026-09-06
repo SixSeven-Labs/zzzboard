@@ -83,8 +83,20 @@ log "start"
 docker compose up -d --remove-orphans
 
 log "caddy reload (Caddyfile is a bind mount; compose does not restart caddy when it changes)"
-docker compose exec -T caddy caddy reload --config /etc/caddy/Caddyfile --adapter caddyfile 2>&1 | tail -1 \
-  || docker compose restart caddy
+# Right after `up`, Caddy's admin socket can take a second to appear; retry
+# before falling back to a restart, which would bounce port 443.
+for attempt in 1 2 3 4 5 6; do
+  if docker compose exec -T caddy caddy reload --config /etc/caddy/Caddyfile --adapter caddyfile >/dev/null 2>&1; then
+    echo "reloaded (attempt $attempt)"
+    break
+  fi
+  if [[ $attempt == 6 ]]; then
+    echo "reload failed after $attempt attempts; restarting caddy"
+    docker compose restart caddy
+  else
+    sleep 2
+  fi
+done
 
 log "systemd"
 cat > /etc/systemd/system/zzzboard.service <<EOF
