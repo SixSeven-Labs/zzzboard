@@ -1,0 +1,10 @@
+# Pre-built variant used by ship.sh: the binary is cross-compiled on the
+# developer machine (cargo zigbuild, x86_64-unknown-linux-musl) and copied into
+# the same distroless base as Dockerfile. No compiler runs on the VM.
+FROM gcr.io/distroless/static-debian12:nonroot
+COPY target/x86_64-unknown-linux-musl/release/zzzboard /zzzboard
+ENV ZZZ_DATA_DIR=/data ZZZ_PORT=8080
+EXPOSE 8080
+VOLUME ["/data"]
+USER nonroot:nonroot
+ENTRYPOINT ["/zzzboard"]

@@ -1,0 +1,7 @@
+# Keep the build context small. Dockerfile copies Cargo.* and src/;
+# Dockerfile.ship copies exactly one pre-built binary out of target/.
+*
+!Cargo.toml
+!Cargo.lock
+!src/
+!target/x86_64-unknown-linux-musl/release/zzzboard

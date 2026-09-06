@@ -5,10 +5,11 @@
 #   first time:  curl -fsSL https://raw.githubusercontent.com/SixSeven-Labs/zzzboard/main/deploy.sh | bash
 #   afterwards:  /opt/zzzboard/deploy.sh
 #
-# What it does: installs Docker (Ubuntu packages) if missing; clones or
-# fast-forwards this repo into /opt/zzzboard; creates /var/lib/zzzboard owned by
-# the container's non-root uid only if it does not exist; writes .env; builds
-# and starts the compose stack; installs a systemd unit so it returns on reboot.
+# What it does: installs Docker (Ubuntu packages) if missing; adds swap; clones
+# or fast-forwards this repo into /opt/zzzboard; creates /var/lib/zzzboard owned
+# by the container's non-root uid only if it does not exist; writes .env; loads
+# a pre-built image if ZZZ_IMAGE points at one (see ship.sh) else builds; starts
+# the compose stack; installs a systemd unit so it returns on reboot.
 set -euo pipefail
 
 REPO="${ZZZ_REPO:-https://github.com/SixSeven-Labs/zzzboard.git}"
@@ -66,8 +67,17 @@ EOF
 chmod 0600 .env
 install -d -m 0750 caddy_data caddy_config
 
-log "build and start"
-docker compose build --pull --quiet
+log "image"
+if [[ -n ${ZZZ_IMAGE:-} && -f ${ZZZ_IMAGE:-} ]]; then
+  echo "loading pre-built image from $ZZZ_IMAGE (shipped by ship.sh)"
+  docker load -i "$ZZZ_IMAGE"
+  rm -f "$ZZZ_IMAGE"
+else
+  echo "building here (slow on an e2-micro; prefer ship.sh from a workstation)"
+  docker compose build --pull --quiet
+fi
+
+log "start"
 docker compose up -d --remove-orphans
 
 log "systemd"
