@@ -39,3 +39,6 @@ caddy_data/
 caddy_config/
 # macOS
 .DS_Store
+
+# project-local guidance for Claude Code (private: the repo is public)
+CLAUDE.md
