@@ -1,0 +1,90 @@
+#!/usr/bin/env bash
+# zzzboard deploy. Run ON the Ubuntu 24.04 VM as root. Idempotent: re-run for
+# every update. Never modifies existing board data in /var/lib/zzzboard.
+#
+#   first time:  curl -fsSL https://raw.githubusercontent.com/SixSeven-Labs/zzzboard/main/deploy.sh | bash
+#   afterwards:  /opt/zzzboard/deploy.sh
+#
+# What it does: installs Docker (Ubuntu packages) if missing; clones or
+# fast-forwards this repo into /opt/zzzboard; creates /var/lib/zzzboard owned by
+# the container's non-root uid only if it does not exist; writes .env; builds
+# and starts the compose stack; installs a systemd unit so it returns on reboot.
+set -euo pipefail
+
+REPO="${ZZZ_REPO:-https://github.com/SixSeven-Labs/zzzboard.git}"
+BRANCH="${ZZZ_BRANCH:-main}"
+APP_DIR=/opt/zzzboard
+DATA_DIR=/var/lib/zzzboard
+APP_UID=65532 # distroless "nonroot"
+
+[[ $EUID -eq 0 ]] || { echo "deploy.sh: run as root" >&2; exit 1; }
+log() { printf '\n==> %s\n' "$*"; }
+
+log "packages"
+export DEBIAN_FRONTEND=noninteractive
+if ! command -v docker >/dev/null 2>&1 || ! docker compose version >/dev/null 2>&1; then
+  apt-get update -q
+  apt-get install -y -q docker.io docker-compose-v2 docker-buildx
+fi
+command -v git >/dev/null 2>&1 || apt-get install -y -q git
+systemctl enable --now docker
+
+log "data dir $DATA_DIR"
+if [[ -d $DATA_DIR ]]; then
+  echo "exists, left untouched ($(du -sh "$DATA_DIR" | cut -f1))"
+else
+  install -d -m 0750 -o "$APP_UID" -g "$APP_UID" "$DATA_DIR"
+  echo "created, owned by uid $APP_UID"
+fi
+
+log "code -> $APP_DIR ($BRANCH)"
+if [[ -d $APP_DIR/.git ]]; then
+  git -C "$APP_DIR" fetch --quiet origin "$BRANCH"
+  git -C "$APP_DIR" reset --quiet --hard "origin/$BRANCH"
+else
+  git clone --quiet --branch "$BRANCH" "$REPO" "$APP_DIR"
+fi
+cd "$APP_DIR"
+git log -1 --format='at %h %s (%ci)'
+
+log "config"
+cat > .env <<EOF
+# written by deploy.sh; edit deploy.sh, not this file
+ZZZBOARD_DATA=$DATA_DIR
+ZZZ_TLS=abuse@zzzboard.org
+ZZZ_BASE_URL=https://zzzboard.org
+EOF
+chmod 0600 .env
+install -d -m 0750 caddy_data caddy_config
+
+log "build and start"
+docker compose build --pull --quiet
+docker compose up -d --remove-orphans
+
+log "systemd"
+cat > /etc/systemd/system/zzzboard.service <<EOF
+[Unit]
+Description=zzzboard (docker compose stack)
+Requires=docker.service
+After=docker.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+WorkingDirectory=$APP_DIR
+ExecStart=/usr/bin/docker compose up -d --remove-orphans
+ExecStop=/usr/bin/docker compose stop
+TimeoutStartSec=300
+
+[Install]
+WantedBy=multi-user.target
+EOF
+systemctl daemon-reload
+systemctl enable --quiet zzzboard.service
+systemctl start zzzboard.service
+
+log "status"
+docker compose ps
+echo
+echo "zzzboard is up. data in $DATA_DIR. check: curl -s http://127.0.0.1:8080/ | head -5"

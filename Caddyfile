@@ -1,0 +1,16 @@
+# zzzboard edge. TLS mode comes from ZZZ_TLS (set in .env, see docker-compose.yml):
+#   production: an email address  -> Let's Encrypt / ZeroSSL via ACME
+#   local:      internal          -> Caddy's own CA (test with curl -k)
+# Caddy's default 1 MB request-header limit matches the app's, so a maximal URL
+# (65,534 bytes) plus a 64 KB Referer pass through unchanged.
+
+zzzboard.org {
+	tls {$ZZZ_TLS:abuse@zzzboard.org}
+	encode gzip
+	reverse_proxy app:8080
+}
+
+zzzboard.net, www.zzzboard.org, www.zzzboard.net {
+	tls {$ZZZ_TLS:abuse@zzzboard.org}
+	redir https://zzzboard.org{uri} permanent
+}
