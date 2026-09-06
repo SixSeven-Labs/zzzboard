@@ -70,7 +70,9 @@ install -d -m 0750 caddy_data caddy_config
 log "image"
 if [[ -n ${ZZZ_IMAGE:-} && -f ${ZZZ_IMAGE:-} ]]; then
   echo "loading pre-built image from $ZZZ_IMAGE (shipped by ship.sh)"
-  docker load -i "$ZZZ_IMAGE"
+  loaded=$(docker load -i "$ZZZ_IMAGE" | tee /dev/stderr | sed -n 's/^Loaded image: //p' | head -1)
+  [[ -n $loaded ]] || { echo "deploy.sh: docker load reported no image" >&2; exit 1; }
+  docker tag "$loaded" zzzboard:local
   rm -f "$ZZZ_IMAGE"
 else
   echo "building here (slow on an e2-micro; prefer ship.sh from a workstation)"

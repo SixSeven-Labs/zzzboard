@@ -14,7 +14,7 @@ set -euo pipefail
 VM=${ZZZ_VM:-zzzboard}
 ZONE=${ZZZ_ZONE:-us-east1-b}
 TARGET=x86_64-unknown-linux-musl
-IMAGE=zzzboard:local
+IMAGE=zzzboard:amd64
 REMOTE_TAR=/tmp/zzzboard-image.tar.gz
 
 cd "$(dirname "$0")"
@@ -29,9 +29,8 @@ rustup target add "$TARGET" >/dev/null
 cargo zigbuild --release --locked --target "$TARGET"
 
 echo "==> building linux/amd64 image $IMAGE"
-# A local (native-arch) zzzboard:local may exist for `docker compose up` on this
-# machine; remember it so the tag can be handed back after the save.
-native=$(docker image inspect "$IMAGE" --format '{{.Id}}' 2>/dev/null || true)
+# Tagged apart from zzzboard:local so a native-arch image used by
+# `docker compose up` on this machine is left alone; deploy.sh retags on the VM.
 docker buildx build --platform linux/amd64 -f Dockerfile.ship -t "$IMAGE" --load .
 
 tar=$(mktemp -t zzzboard-image.XXXXXX).tar.gz
@@ -39,10 +38,6 @@ trap 'rm -f "$tar"' EXIT
 echo "==> saving image to $tar"
 docker save "$IMAGE" | gzip >"$tar"
 ls -la "$tar"
-if [[ -n $native ]]; then
-  docker tag "$IMAGE" zzzboard:shipped-amd64
-  docker tag "$native" "$IMAGE"
-fi
 
 echo "==> copying to $VM ($ZONE)"
 gcloud compute scp "$tar" "$VM:$REMOTE_TAR" --zone "$ZONE" --quiet
