@@ -82,6 +82,10 @@ fi
 log "start"
 docker compose up -d --remove-orphans
 
+log "caddy reload (Caddyfile is a bind mount; compose does not restart caddy when it changes)"
+docker compose exec -T caddy caddy reload --config /etc/caddy/Caddyfile --adapter caddyfile 2>&1 | tail -1 \
+  || docker compose restart caddy
+
 log "systemd"
 cat > /etc/systemd/system/zzzboard.service <<EOF
 [Unit]
