@@ -385,35 +385,33 @@ impl Store {
     }
 
     /// Current text of a page: every append, each followed by `\n`.
-    /// `tail` limits to the last N appends.
-    pub fn page(&self, name: &str, tail: Option<usize>) -> Option<String> {
+    /// `since` keeps appends stamped after it; `tail` then limits to the last N.
+    pub fn page(&self, name: &str, since: Option<&str>, tail: Option<usize>) -> Option<String> {
         let idx = self.index.read();
         let p = idx.pages.get(name)?;
-        let revs = tail_slice(&p.revs, tail);
-        let mut out = String::with_capacity(revs.iter().map(|r| r.text.len() + 1).sum());
-        for r in revs {
+        let revs = select(&p.revs, since, tail);
+        let mut out = String::with_capacity(revs.iter().map(|(_, r)| r.text.len() + 1).sum());
+        for (_, r) in revs {
             out.push_str(&r.text);
             out.push('\n');
         }
         Some(out)
     }
 
-    /// (total revisions, [(1-based n, rev)]) — optionally only the last N.
-    pub fn history(&self, name: &str, tail: Option<usize>) -> Option<(usize, Vec<(usize, Rev)>)> {
+    /// (total revisions, [(1-based n, rev)]), filtered like `page`.
+    pub fn history(
+        &self,
+        name: &str,
+        since: Option<&str>,
+        tail: Option<usize>,
+    ) -> Option<(usize, Vec<(usize, Rev)>)> {
         let idx = self.index.read();
         let p = idx.pages.get(name)?;
-        let total = p.revs.len();
-        let start = match tail {
-            Some(n) if n < total => total - n,
-            _ => 0,
-        };
-        let revs = p.revs[start..]
-            .iter()
-            .cloned()
-            .enumerate()
-            .map(|(i, r)| (start + i + 1, r))
+        let revs = select(&p.revs, since, tail)
+            .into_iter()
+            .map(|(n, r)| (n, r.clone()))
             .collect();
-        Some((total, revs))
+        Some((p.revs.len(), revs))
     }
 
     /// Every page, sorted by name (byte order, so case-sensitive).
@@ -458,11 +456,24 @@ impl Store {
     }
 }
 
-fn tail_slice<T>(v: &[T], tail: Option<usize>) -> &[T] {
-    match tail {
-        Some(n) if n < v.len() => &v[v.len() - n..],
-        _ => v,
+/// (1-based n, rev) for revisions stamped strictly after `since`, then the
+/// last `tail` of those. `since` must already be in the stored stamp format
+/// (`util::norm_ts`): fixed-width UTC millis, so string order is time order.
+/// A linear scan, not a binary search: stamps follow the wall clock, and a
+/// clock stepped backwards would break a search but only reorder this filter.
+fn select<'a>(revs: &'a [Rev], since: Option<&str>, tail: Option<usize>) -> Vec<(usize, &'a Rev)> {
+    let mut out: Vec<(usize, &Rev)> = revs
+        .iter()
+        .enumerate()
+        .filter(|(_, r)| since.is_none_or(|s| r.ts.as_str() > s))
+        .map(|(i, r)| (i + 1, r))
+        .collect();
+    if let Some(n) = tail {
+        if n < out.len() {
+            out.drain(..out.len() - n);
+        }
     }
+    out
 }
 
 #[cfg(test)]
@@ -484,6 +495,34 @@ mod tests {
             query: query.map(str::to_owned),
             headers,
         }
+    }
+
+    #[test]
+    fn select_since_then_tail() {
+        let rev = |ts: &str, text: &str| Rev {
+            ts: ts.into(),
+            id: String::new(),
+            text: text.into(),
+        };
+        let revs = [
+            rev("2026-10-15T03:40:00.000Z", "a"),
+            rev("2026-10-15T03:40:00.500Z", "b"),
+            rev("2026-10-15T03:41:00.000Z", "c"),
+            rev("2026-10-15T03:42:00.000Z", "d"),
+        ];
+        let texts = |v: Vec<(usize, &Rev)>| -> Vec<(usize, String)> {
+            v.into_iter().map(|(n, r)| (n, r.text.clone())).collect()
+        };
+        // strictly after: the revision stamped exactly at `since` is excluded
+        let since = Some("2026-10-15T03:40:00.000Z");
+        assert_eq!(
+            texts(select(&revs, since, None)),
+            [(2, "b".into()), (3, "c".into()), (4, "d".into())]
+        );
+        // tail applies to what since kept, and n stays the page-wide number
+        assert_eq!(texts(select(&revs, since, Some(1))), [(4, "d".into())]);
+        assert!(select(&revs, Some("2026-10-15T03:42:00.000Z"), None).is_empty());
+        assert_eq!(select(&revs, None, Some(10)).len(), 4);
     }
 
     #[tokio::test]
@@ -525,14 +564,14 @@ mod tests {
         assert_eq!(r2.revs[0].id, rev_id(&r1.revs[0].id, &r2.ts, "two\nlines"));
         assert_eq!(r2.beats[0].beat.count, 1);
 
-        assert_eq!(s.page("notes", None).unwrap(), "one\ntwo\nlines\n");
-        assert_eq!(s.page("notes", Some(1)).unwrap(), "two\nlines\n");
-        let (total, hist) = s.history("notes", None).unwrap();
+        assert_eq!(s.page("notes", None, None).unwrap(), "one\ntwo\nlines\n");
+        assert_eq!(s.page("notes", None, Some(1)).unwrap(), "two\nlines\n");
+        let (total, hist) = s.history("notes", None, None).unwrap();
         assert_eq!(total, 2);
         assert_eq!(hist[1].0, 2);
 
         // every commit also wrote one _log line
-        let log = s.page(LOG_PAGE, None).unwrap();
+        let log = s.page(LOG_PAGE, None, None).unwrap();
         assert_eq!(log.lines().count(), 2);
         assert!(log.contains("q=\"p=notes&t=one\""));
         assert!(log.contains("ua=\"test/1\""));
@@ -548,8 +587,8 @@ mod tests {
         assert_eq!(st.pages, 2);
         assert_eq!(st.entries, 5); // 2 appends + 2 log lines + 1 beat
         assert_eq!(st.skipped, 0);
-        assert_eq!(s.page("notes", None).unwrap(), "one\ntwo\nlines\n");
-        assert_eq!(s.history("notes", None).unwrap().1[1].1.id, r2.revs[0].id);
+        assert_eq!(s.page("notes", None, None).unwrap(), "one\ntwo\nlines\n");
+        assert_eq!(s.history("notes", None, None).unwrap().1[1].1.id, r2.revs[0].id);
         assert_eq!(s.beat("c7", "alive").unwrap().count, 1);
 
         // heartbeat count survives and increments
@@ -595,7 +634,7 @@ mod tests {
         assert_eq!(st.skipped, 1);
         let after = std::fs::metadata(&path).unwrap().len();
         assert!(after > before, "nothing removed, newline added");
-        assert_eq!(s.page("a", None).unwrap(), "ok\n");
+        assert_eq!(s.page("a", None, None).unwrap(), "ok\n");
         // and the store keeps working on clean lines afterwards
         s.commit(
             &meta(None),
@@ -608,6 +647,6 @@ mod tests {
         .unwrap();
         drop(s);
         let s = Store::open(dir.path()).unwrap();
-        assert_eq!(s.page("a", None).unwrap(), "ok\nagain\n");
+        assert_eq!(s.page("a", None, None).unwrap(), "ok\nagain\n");
     }
 }

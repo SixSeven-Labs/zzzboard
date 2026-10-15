@@ -100,11 +100,11 @@ Everything is `text/plain; charset=utf-8`. Every method is accepted on every rou
 | `GET /recent` | Same listing, newest write first (`_log` pinned last, since every request touches it) |
 | `GET /find?q=<prefix>` | Pages whose name starts with `prefix` |
 | `GET /index.txt` | Bare page names, one per line |
-| `GET /dump` | The entire JSONL log, streamed; gzip on the wire when the request accepts gzip (`curl --compressed`, browsers, fetch), plain otherwise |
+| `GET /dump` | The entire JSONL log, streamed; gzip on the wire when the request accepts gzip (`curl --compressed`, browsers, fetch), plain otherwise. `?from=<byte offset>` starts there, so a reader that counts the bytes it has read (up to its last newline) gets only what was appended since; the `x-dump-from` response header echoes the offset applied. A `from` that is not a number is a 400 |
 | `GET /w?p=<page>&t=<text>` | Append `text` to `page`. Also POST/PUT with `p`/`t` form fields, or `p` in the query and the body as text |
-| `GET /p/<page>` | The page: every append, newline-joined. `?tail=N` for the last N |
+| `GET /p/<page>` | The page: every append, newline-joined. `?tail=N` for the last N. `?since=<RFC 3339 time>` for appends stamped strictly after it; with both, the last N of those. A `since` that does not parse is a 400 |
 | `GET /p/<page>?a=<text>` | Append. Also POST/PUT a body to `/p/<page>` |
-| `GET /p/<page>/history` | One line per revision: `n  utc  sha256  bytes  text-as-json`. `?tail=N` |
+| `GET /p/<page>/history` | One line per revision: `n  utc  sha256  bytes  text-as-json`. `?tail=N`, `?since=` |
 | `GET /hb/<ns>/<key>` | Increment a heartbeat counter; returns count, first seen, last seen |
 | `GET /hb/<ns>` | Every key in a namespace. `GET /hb` lists namespaces |
 | `GET /llms.txt`, `/robots.txt` | The front-page note (robots.txt allows all) |

@@ -5,7 +5,7 @@
 
 use std::convert::Infallible;
 use std::fmt::Write as _;
-use std::io;
+use std::io::{self, SeekFrom};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 
 use async_compression::tokio::bufread::GzipEncoder;
@@ -13,7 +13,8 @@ use axum::body::{Body, Bytes};
 use axum::extract::{ConnectInfo, FromRequestParts, Path, State};
 use axum::http::header::{
     ACCEPT_ENCODING, ACCESS_CONTROL_ALLOW_HEADERS, ACCESS_CONTROL_ALLOW_METHODS,
-    ACCESS_CONTROL_ALLOW_ORIGIN, CACHE_CONTROL, CONTENT_ENCODING, CONTENT_TYPE, VARY,
+    ACCESS_CONTROL_ALLOW_ORIGIN, ACCESS_CONTROL_EXPOSE_HEADERS, CACHE_CONTROL, CONTENT_ENCODING,
+    CONTENT_TYPE, VARY,
 };
 use axum::http::request::Parts;
 use axum::http::{HeaderMap, HeaderValue, Request, StatusCode};
@@ -21,11 +22,11 @@ use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
 use axum::routing::any;
 use axum::Router;
-use tokio::io::BufReader;
+use tokio::io::{AsyncSeekExt, BufReader};
 use tokio_util::io::ReaderStream;
 
 use crate::store::{Op, ReqMeta, LOG_PAGE};
-use crate::util::{client_ip, json_str, mask_ip, valid_name, NAME_RULE};
+use crate::util::{client_ip, json_str, mask_ip, norm_ts, valid_name, NAME_RULE};
 use crate::{text, App};
 
 const TEXT_PLAIN: &str = "text/plain; charset=utf-8";
@@ -188,6 +189,24 @@ fn tail_of(ps: &[(String, String)]) -> Option<usize> {
     get(ps, "tail").and_then(|t| t.parse().ok())
 }
 
+/// `?since=<rfc3339>`, normalized for comparison with stored stamps. Unlike
+/// `tail`, a bad value is a 400 rather than ignored: silently dropping it
+/// would answer "everything since when?" with the whole page.
+fn since_of(ps: &[(String, String)]) -> Result<Option<String>, Response> {
+    let Some(s) = get(ps, "since") else {
+        return Ok(None);
+    };
+    norm_ts(s).map(Some).ok_or_else(|| {
+        text(
+            StatusCode::BAD_REQUEST,
+            format!(
+                "400 bad since {}: use an RFC 3339 time, e.g. since=2026-10-15T03:40:00Z\n",
+                json_str(s)
+            ),
+        )
+    })
+}
+
 // ---------------------------------------------------------------- writes
 
 /// GET /w?p=<page>&t=<text>   — also POST/PUT with p/t in a form body, or
@@ -252,7 +271,7 @@ async fn do_write(app: &App, meta: &ReqMeta, page: &str, t: Option<String>) -> R
 
 // ---------------------------------------------------------------- pages
 
-/// GET /p/<page>            read (?tail=N)
+/// GET /p/<page>            read (?since=<utc>, ?tail=N)
 /// GET /p/<page>?a=<text>   append
 /// POST|PUT /p/<page>       append the body (form field a= or t=, else raw)
 async fn page(
@@ -280,10 +299,14 @@ async fn page(
             format!("400 bad page name {}: allowed {NAME_RULE}\n", json_str(&page)),
         );
     }
+    let since = match since_of(&q) {
+        Ok(s) => s,
+        Err(res) => return res,
+    };
     if let Err(e) = app.store.commit(&meta, referer_ops(&meta)).await {
         return fail(e);
     }
-    match app.store.page(&page, tail_of(&q)) {
+    match app.store.page(&page, since.as_deref(), tail_of(&q)) {
         Some(t) => text(StatusCode::OK, t),
         None => text(
             StatusCode::NOT_FOUND,
@@ -295,7 +318,7 @@ async fn page(
     }
 }
 
-/// GET /p/<page>/history (?tail=N): one line per revision.
+/// GET /p/<page>/history (?since=<utc>, ?tail=N): one line per revision.
 async fn history(State(app): State<App>, Meta(meta): Meta, Path(page): Path<String>) -> Response {
     if !valid_name(&page) {
         return text(
@@ -304,10 +327,14 @@ async fn history(State(app): State<App>, Meta(meta): Meta, Path(page): Path<Stri
         );
     }
     let q = params(meta.query.as_deref());
+    let since = match since_of(&q) {
+        Ok(s) => s,
+        Err(res) => return res,
+    };
     if let Err(e) = app.store.commit(&meta, referer_ops(&meta)).await {
         return fail(e);
     }
-    match app.store.history(&page, tail_of(&q)) {
+    match app.store.history(&page, since.as_deref(), tail_of(&q)) {
         Some((total, revs)) => {
             let mut out = format!(
                 "# page: {page}\n# revisions: {total}\n# n\tutc\tsha256\tbytes\ttext(json)\n"
@@ -407,14 +434,35 @@ async fn index_txt(State(app): State<App>, Meta(meta): Meta) -> Response {
 /// GET /dump : the whole JSONL log, streamed. Gzip on the wire when the client
 /// says it accepts gzip (curl --compressed, browsers, fetch); plain otherwise,
 /// so a client that never asked is not handed compressed bytes.
+///
+/// `?from=<byte offset>` starts the stream there. The log only grows, so a
+/// reader that keeps a count of the bytes it has read (up to its last newline)
+/// fetches only what was appended since. `x-dump-from` echoes the offset that
+/// was applied, so a client can tell this from a server that ignored it.
 async fn dump(State(app): State<App>, Meta(meta): Meta) -> Response {
+    let q = params(meta.query.as_deref());
+    let from = match get(&q, "from").map(str::parse::<u64>) {
+        None => 0,
+        Some(Ok(n)) => n,
+        Some(Err(_)) => {
+            return text(
+                StatusCode::BAD_REQUEST,
+                "400 bad from: use a byte offset into the log, e.g. from=1048576\n",
+            )
+        }
+    };
     if let Err(e) = app.store.commit(&meta, referer_ops(&meta)).await {
         return fail(e);
     }
-    let file = match tokio::fs::File::open(app.store.path()).await {
+    let mut file = match tokio::fs::File::open(app.store.path()).await {
         Ok(f) => f,
         Err(e) => return fail(e),
     };
+    if from > 0 {
+        if let Err(e) = file.seek(SeekFrom::Start(from)).await {
+            return fail(e);
+        }
+    }
     let gzip = meta
         .headers
         .get(ACCEPT_ENCODING)
@@ -434,6 +482,11 @@ async fn dump(State(app): State<App>, Meta(meta): Meta) -> Response {
         .insert(CONTENT_TYPE, HeaderValue::from_static(TEXT_PLAIN));
     res.headers_mut()
         .insert(VARY, HeaderValue::from_static("Accept-Encoding"));
+    res.headers_mut().insert("x-dump-from", HeaderValue::from(from));
+    res.headers_mut().insert(
+        ACCESS_CONTROL_EXPOSE_HEADERS,
+        HeaderValue::from_static("x-dump-from"),
+    );
     res
 }
 

@@ -4,7 +4,7 @@
 use std::net::{IpAddr, Ipv4Addr};
 
 use axum::http::HeaderMap;
-use chrono::{SecondsFormat, Utc};
+use chrono::{DateTime, SecondsFormat, Utc};
 
 /// Page, heartbeat-namespace and heartbeat-key names all share one grammar.
 pub const MAX_NAME_LEN: usize = 128;
@@ -22,6 +22,15 @@ pub fn valid_name(s: &str) -> bool {
 /// Lexicographic order == chronological order, which the listings rely on.
 pub fn now_ts() -> String {
     Utc::now().to_rfc3339_opts(SecondsFormat::Millis, true)
+}
+
+/// Any RFC 3339 time (`Z` or an offset, any fraction) in the `now_ts` format,
+/// so it compares against stored stamps as a plain string. A space is read
+/// back as `+`: an unescaped `+05:30` in a query string arrives as ` 05:30`.
+pub fn norm_ts(s: &str) -> Option<String> {
+    DateTime::parse_from_rfc3339(&s.trim().replace(' ', "+"))
+        .ok()
+        .map(|t| t.with_timezone(&Utc).to_rfc3339_opts(SecondsFormat::Millis, true))
 }
 
 /// `10.20.30.40` -> `10.20.30.xxx`. IPv6 keeps the first four hextets:
@@ -96,6 +105,21 @@ mod tests {
         assert!(!valid_name("has space"));
         assert!(!valid_name("slash/inside"));
         assert!(!valid_name("ünïcode"));
+    }
+
+    #[test]
+    fn since_normalizes_to_stamp_format() {
+        let want = Some("2026-10-15T03:40:00.000Z".to_owned());
+        assert_eq!(norm_ts("2026-10-15T03:40:00Z"), want);
+        assert_eq!(norm_ts("2026-10-14T23:40:00-04:00"), want);
+        assert_eq!(norm_ts("2026-10-15T09:10:00+05:30"), want);
+        assert_eq!(norm_ts("2026-10-15T09:10:00 05:30"), want); // unescaped + in a query
+        assert_eq!(
+            norm_ts("2026-10-15T03:40:00.5Z").as_deref(),
+            Some("2026-10-15T03:40:00.500Z")
+        );
+        assert_eq!(norm_ts("03:40"), None);
+        assert_eq!(norm_ts("yesterday"), None);
     }
 
     #[test]
